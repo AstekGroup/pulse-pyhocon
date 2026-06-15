@@ -1,0 +1,34 @@
+[build-system]
+requires = ["maturin>=1.7,<2"]
+build-backend = "maturin"
+
+[project]
+name = "pulse-pyhocon"
+version = "0.1.0"
+description = "Accélérateur Rust/PyO3 pour pyhocon : parseur HOCON natif iso-fonctionnel, avec fallback transparent vers pyhocon."
+requires-python = ">=3.11"
+license = { text = "Apache-2.0" }
+readme = "README.md"
+authors = [{ name = "Pulse by Astek" }]
+keywords = ["hocon", "pyhocon", "config", "parser", "rust", "pyo3", "performance"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Topic :: Software Development :: Libraries",
+]
+# Le fallback transparent (constructs hors chemin rapide) et le mode dégradé délèguent à pyhocon.
+dependencies = ["pyhocon>=0.3.61"]
+
+[project.urls]
+Homepage = "https://github.com/AstekGroup/pulse-pyhocon"
+Repository = "https://github.com/AstekGroup/pulse-pyhocon"
+Issues = "https://github.com/AstekGroup/pulse-pyhocon/issues"
+
+[tool.maturin]
+python-source = "python"
+module-name = "pulse_pyhocon._native"
+features = ["pyo3/extension-module"]
