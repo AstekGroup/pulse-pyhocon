@@ -28,9 +28,9 @@ jobs:
         run: cargo test
         env:
           PYO3_PYTHON: python
-      - name: install + build (maturin develop)
+      - name: install + build (cœur Rust via le backend maturin)
         run: |
-          pip install maturin pytest pyhocon
-          maturin develop --release
+          pip install pytest pyhocon
+          pip install .
       - name: pytest (iso vs pyhocon)
         run: pytest tests/ -q
