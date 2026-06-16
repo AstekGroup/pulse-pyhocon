@@ -65,11 +65,13 @@ impl From<String> for HoconError {
     }
 }
 
-/// Erreurs de la passe de résolution → types d'exception pyhocon correspondants.
+/// Erreurs de la passe de résolution. Toutes routées vers le fallback transparent (pyhocon tranche) :
+/// le natif ne gère que ce qu'il peut rendre à l'identique.
 #[derive(Debug)]
 enum ResolveError {
-    Subst(String),     // -> ConfigSubstitutionException
-    WrongType(String), // -> ConfigWrongTypeException
+    Subst(String),     // substitution non résolvable (auto-réf non concrète, cycle, absente…)
+    WrongType(String), // objet/array dans une concaténation string
+    Fallback(String),  // rendu non garanti iso (ex. float extrême en concat → str(float) Python)
 }
 
 struct Parser {
@@ -792,7 +794,15 @@ fn render_scalar(v: &Value) -> Result<String, ResolveError> {
         Value::Bool(false) => "False".into(),
         Value::Int(i) => i.to_string(),
         Value::BigInt(s) => s.clone(),
-        Value::Float(f) => render_float(*f),
+        // Rust formate les float SANS notation scientifique ; Python `str(float)` l'utilise hors
+        // [1e-4, 1e16). Pour ces float extrêmes (ou non finis) en concaténation string, le rendu
+        // divergerait → fallback transparent (pyhocon rend). Les float « normaux » restent natifs.
+        Value::Float(f) if f.is_finite() && (*f == 0.0 || (f.abs() >= 1e-4 && f.abs() < 1e16)) => render_float(*f),
+        Value::Float(_) => {
+            return Err(ResolveError::Fallback(
+                "float hors plage de rendu iso en concaténation string".into(),
+            ))
+        }
         Value::Str(s) => s.clone(),
         Value::Obj(_) | Value::Arr(_) => {
             return Err(ResolveError::WrongType(
@@ -874,7 +884,7 @@ fn parse(py: Python<'_>, s: &str, base: Option<&str>) -> PyResult<PyObject> {
         // (`a = ${a}`), self-concat (`p = ${p}":x"`), navigation de chemin à travers une
         // substitution (`${x.host}` où x=${base})… que pyhocon RÉSOUT, comme les vraies erreurs
         // (variable absente, cycle, type incompatible) que pyhocon LÈVE — on délègue. iso garantie.
-        Err(ResolveError::Subst(m)) | Err(ResolveError::WrongType(m)) => {
+        Err(ResolveError::Subst(m)) | Err(ResolveError::WrongType(m)) | Err(ResolveError::Fallback(m)) => {
             return Err(pyo3::exceptions::PyNotImplementedError::new_err(m))
         }
     };

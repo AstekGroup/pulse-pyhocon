@@ -151,6 +151,35 @@ def test_iso_keyword_concat(text):
     assert _outcome(pulse_pyhocon.parse, text) == _outcome(_ref, text)
 
 
+# Entrée MALFORMÉE : le natif lève ValueError → le wrapper délègue à pyhocon, qui lève SON type exact
+# (ParseException/…). Parité du TYPE d'exception (avant : ValueError ≠ ParseException).
+MALFORMED = [
+    "= 5",
+    "a = }",
+    "{ a = 1",
+]
+
+
+@pytest.mark.parametrize("text", MALFORMED)
+def test_iso_malformed_exception_type(text):
+    assert _outcome(pulse_pyhocon.parse, text) == _outcome(_ref, text)
+
+
+# Float EXTRÊME en concaténation string : Rust formate sans notation scientifique ≠ str(float) Python
+# → fallback transparent (pyhocon rend). Un float NORMAL en concat reste natif (iso direct).
+FLOAT_CONCAT = [
+    "f = 1e100\ns = ${f} x",      # extrême -> fallback
+    "f = 1e-7\ns = ${f}x",        # extrême -> fallback
+    "f = 1.5\ns = ${f}-build",    # normal -> natif
+    "f = 3.14\ns = v${f}",        # normal -> natif
+]
+
+
+@pytest.mark.parametrize("text", FLOAT_CONCAT)
+def test_iso_float_concat(text):
+    assert _outcome(pulse_pyhocon.parse, text) == _outcome(_ref, text)
+
+
 INCLUDES = [
     ('include "sub.conf"\nmore = 2', {"sub.conf": 'x = 1\ny = "z"\n'}),
     ('include file("sub.conf")', {"sub.conf": "x = 1\n"}),

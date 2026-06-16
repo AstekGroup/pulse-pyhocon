@@ -41,8 +41,10 @@ def parse_string(s):
     if _native_parse is not None:
         try:
             return ConfigFactory.from_dict(_native_parse(s))
-        except NotImplementedError:
-            pass  # hors périmètre / échec de résolution → pyhocon (exact)
+        except (NotImplementedError, ValueError):
+            # hors périmètre / échec de résolution / entrée malformée → pyhocon tranche (résout, ou
+            # lève SON type d'exception exact : ConfigException/ParseException…). Iso garantie.
+            pass
     return ConfigFactory.parse_string(s)
 
 
@@ -60,7 +62,7 @@ def parse_file(filename, encoding="utf-8", required=True, resolve=True):
     try:
         base = os.path.dirname(os.path.abspath(filename))
         return ConfigFactory.from_dict(_native_parse(content, base))
-    except NotImplementedError:
+    except (NotImplementedError, ValueError):
         return ConfigFactory.parse_file(filename, encoding=encoding, required=required, resolve=resolve)
 
 

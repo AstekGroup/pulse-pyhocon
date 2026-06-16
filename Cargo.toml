@@ -1,10 +1,9 @@
-# Remplacer pulse_pyhocon par le nom du drop-in (ex. pulse_phonenumbers).
 [package]
 name = "pulse_pyhocon"
 version = "0.2.0"
 edition = "2021"
-license = "Apache-2.0"          # aligner sur la licence (permissive) de la cible
-description = "Drop-in Rust/PyO3 d'un sous-ensemble du hotspot de <cible> (axe B)"
+license = "Apache-2.0"
+description = "Noyau Rust/PyO3 de pulse-pyhocon : parseur HOCON natif, drop-in iso de pyhocon"
 
 [lib]
 name = "_native"
