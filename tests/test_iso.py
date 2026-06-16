@@ -24,7 +24,8 @@ def _plain(x):
 
 
 def _canon(x):
-    """Forme canonique TYPÉE — attrape tout drift int/float/bool/null (1 == 1.0 en Python)."""
+    """Forme canonique TYPÉE — attrape tout drift int/float/bool/null (1 == 1.0 en Python).
+    ConfigTree ⊂ dict (récursion via items()) ; NoneValue (null interne pyhocon) ≡ None."""
     if isinstance(x, dict):
         return ("dict", [(k, _canon(v)) for k, v in x.items()])
     if isinstance(x, list):
@@ -35,7 +36,7 @@ def _canon(x):
         return ("int", x)
     if isinstance(x, float):
         return ("float", x)
-    if x is None:
+    if x is None or (NoneValue and isinstance(x, NoneValue)):
         return ("null", None)
     if isinstance(x, str):
         return ("str", x)
@@ -50,7 +51,8 @@ def _outcome(fn, text):
 
 
 def _ref(text):
-    return _plain(ConfigFactory.parse_string(text))
+    # ConfigTree brut : le candidat renvoie aussi un ConfigTree → on compare l'API complète.
+    return ConfigFactory.parse_string(text)
 
 
 CORE = [
@@ -150,3 +152,78 @@ def test_iso_includes(text, files, tmp_path, monkeypatch):
 def test_backend_native():
     # En CI (extension compilée), le backend doit être natif.
     assert pulse_pyhocon.BACKEND in ("rust", "python")
+
+
+# --- API ConfigTree complète : parse* renvoie un vrai ConfigTree, iso avec pyhocon -------------
+
+API_CONF = (
+    'a = 1\nb = hello\nc = 3.5\nd = true\ne = [1, 2, 3]\n'
+    'f { x = 10\ng { h = deep } }\nnothing = null'
+)
+
+
+def test_returns_real_configtree():
+    assert isinstance(pulse_pyhocon.parse(API_CONF), ConfigTree)
+    assert isinstance(pulse_pyhocon.parse_string(API_CONF), ConfigTree)
+
+
+@pytest.mark.parametrize("access", [
+    lambda t: t.get_int("a"),
+    lambda t: t.get_string("b"),
+    lambda t: t.get_float("c"),
+    lambda t: t.get_bool("d"),
+    lambda t: t.get_list("e"),
+    lambda t: t.get_string("a"),                 # coercition int -> str
+    lambda t: t.get("f.x"),                      # accès pointé
+    lambda t: t.get_config("f").get("g.h"),      # sous-config
+    lambda t: t.get("absent", "DEFAULT"),        # défaut
+    lambda t: "f" in t,
+    lambda t: sorted(t.keys()),
+    lambda t: t.as_plain_ordered_dict(),
+    lambda t: t["f"]["x"],
+])
+def test_iso_configtree_getters(access):
+    a = pulse_pyhocon.parse(API_CONF)
+    b = ConfigFactory.parse_string(API_CONF)
+    try:
+        ra = ("ok", repr(access(a)))
+    except Exception as e:
+        ra = ("exc", type(e).__name__)
+    try:
+        rb = ("ok", repr(access(b)))
+    except Exception as e:
+        rb = ("exc", type(e).__name__)
+    assert ra == rb
+
+
+@pytest.mark.parametrize("conv", ["to_json", "to_hocon", "to_properties", "to_yaml"])
+def test_iso_hocon_converter(conv):
+    from pyhocon.converter import HOCONConverter
+    a = pulse_pyhocon.parse(API_CONF)
+    b = ConfigFactory.parse_string(API_CONF)
+    assert getattr(HOCONConverter, conv)(a) == getattr(HOCONConverter, conv)(b)
+
+
+def test_iso_with_fallback():
+    base, over = "a = 1\nb = 2", "b = 20\nc = 30"
+    a = pulse_pyhocon.parse(base).with_fallback(pulse_pyhocon.parse(over))
+    b = ConfigFactory.parse_string(base).with_fallback(ConfigFactory.parse_string(over))
+    assert _canon(a) == _canon(b)
+
+
+def test_iso_parse_file(tmp_path):
+    (tmp_path / "sub.conf").write_text('y = 2\n')
+    (tmp_path / "main.conf").write_text('include "sub.conf"\nx = 1\nz = ${x}\n')
+    path = str(tmp_path / "main.conf")
+    a = pulse_pyhocon.parse_file(path)
+    b = ConfigFactory.parse_file(path)
+    assert isinstance(a, ConfigTree)
+    assert _canon(a) == _canon(b)
+
+
+def test_iso_parse_file_missing_required(tmp_path):
+    # fichier requis manquant : même comportement (exception) des deux côtés
+    path = str(tmp_path / "nope.conf")
+    ra = _outcome(lambda _p: pulse_pyhocon.parse_file(path), path)
+    rb = _outcome(lambda _p: ConfigFactory.parse_file(path), path)
+    assert ra[0] == rb[0]  # tous deux ok (vide) ou tous deux exc

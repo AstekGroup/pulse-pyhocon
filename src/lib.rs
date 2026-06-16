@@ -753,10 +753,17 @@ fn value_to_py<'py>(py: Python<'py>, v: &Value) -> PyResult<Bound<'py, PyAny>> {
     })
 }
 
-/// Drop-in de `ConfigFactory.parse_string(s)` → dict imbriqué.
+/// Parse HOCON → dict imbriqué (le wrapper Python l'enveloppe ensuite en `ConfigTree`).
+/// `base` : répertoire de résolution des `include` (None = cwd, comme `parse_string` ;
+/// `parse_file` passe le dossier du fichier, comme pyhocon).
 #[pyfunction]
-fn parse(py: Python<'_>, s: &str) -> PyResult<PyObject> {
-    let tree = match Parser::new(s).parse_root() {
+#[pyo3(signature = (s, base=None))]
+fn parse(py: Python<'_>, s: &str, base: Option<&str>) -> PyResult<PyObject> {
+    let mut parser = Parser::new(s);
+    if let Some(b) = base {
+        parser.base = PathBuf::from(b);
+    }
+    let tree = match parser.parse_root() {
         Ok(t) => t,
         Err(HoconError::FileNotFound(p)) => {
             return Err(pyo3::exceptions::PyFileNotFoundError::new_err(format!(

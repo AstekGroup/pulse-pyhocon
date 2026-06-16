@@ -9,13 +9,25 @@ natif, **iso-fonctionnel**, avec **fallback transparent** vers pyhocon. Projet *
 
 ```python
 import pulse_pyhocon
-config = pulse_pyhocon.parse(text)   # dict imbriqué, identique à ConfigFactory.parse_string(text)
+config = pulse_pyhocon.parse(text)   # un vrai pyhocon.ConfigTree (API complète), parsé en Rust
+config.get_int("server.port")        # get_string/int/float/bool/list/config, accès pointé, défaut…
+config.get("db.host", "localhost")
+config.with_fallback(pulse_pyhocon.parse(defaults))
 ```
+
+`parse` / `parse_string` / `parse_file` renvoient un **vrai `pyhocon.ConfigTree`** → toute l'API
+pyhocon fonctionne (getters typés, accès pointé, `with_fallback`, `as_plain_ordered_dict`,
+`HOCONConverter.to_hocon/json/yaml/properties`). `ConfigFactory`, `ConfigTree`, `HOCONConverter`,
+`from_dict`, `parse_URL` sont ré-exportés pour un import drop-in. Le cœur Rust parse vite, puis l'arbre
+est bâti via `ConfigFactory.from_dict` (les getters/converters restent ceux de pyhocon → iso, pas de
+réimplémentation hors chemin chaud).
 
 ## Pourquoi
 
-- **~1000–5000× plus rapide** que `pyhocon` sur le parsing (le goulot est du Python interprété, pas
-  une C-extension — cas d'école pour Rust). Mesuré en A/B drift-immune sur des configs réalistes.
+- **~200–350× plus rapide** que `pyhocon` sur `parse(...).→ConfigTree` (le goulot est du Python
+  interprété, pas une C-extension — cas d'école pour Rust). Mesuré en A/B drift-immune sur des configs
+  réalistes. (Le parsing brut seul atteint ~1000–5000× ; bâtir le `ConfigTree` complet ajoute un coût
+  modéré, conservé ici pour la compatibilité d'API totale.)
 - **Iso-fonctionnel** : chaque sortie est validée contre `pyhocon` par un **oracle différentiel typé**
   (résultat *et* type d'exception), sur un large corpus + fuzz adversarial plein-Unicode.
 - **Toujours correct** : ce que le chemin rapide ne couvre pas est délégué **de façon transparente**
@@ -50,10 +62,10 @@ le fallback pur-Python si l'extension native n'est pas disponible.
 
 ## Statut
 
-Alpha. API : `pulse_pyhocon.parse(text) -> dict`. `pulse_pyhocon.BACKEND` vaut `"rust"` ou `"python"`.
-Feuille de route : résolution native (au lieu du fallback) de l'auto-référence et de la navigation à
-travers une substitution ; includes url/classpath ; et, à terme, un retour `ConfigTree` complet
-(getters typés, `with_fallback`, `HOCONConverter`) pour une compatibilité d'API totale.
+Alpha. API : `parse`/`parse_string`/`parse_file` → `pyhocon.ConfigTree` ; `parse_URL`/`from_dict`
+ré-exportés. `pulse_pyhocon.BACKEND` vaut `"rust"` ou `"python"`. Feuille de route (perf, l'iso est
+acquise via fallback) : résolution NATIVE (au lieu du fallback) de l'auto-référence et de la
+navigation à travers une substitution ; includes url/classpath en natif.
 
 ## Licence & crédits
 
