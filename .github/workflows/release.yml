@@ -1,6 +1,6 @@
 name: Release
 
-# Publie sur PyPI lors d'un tag vX.Y.Z, via Trusted Publishing (OIDC) — aucun token stocké.
+# Publishes to PyPI on a vX.Y.Z tag, via Trusted Publishing (OIDC) — no stored token.
 on:
   push:
     tags: ["v*"]
@@ -19,8 +19,8 @@ jobs:
         platform:
           - { runner: ubuntu-latest, target: x86_64 }
           - { runner: ubuntu-latest, target: aarch64 }
-          # macOS Intel (macos-13) retiré : runners GitHub Intel en voie de dépréciation, file
-          # d'attente non fiable. Apple Silicon couvert (macos-14/arm64) ; Intel via sdist.
+          # macOS Intel (macos-13) removed: GitHub Intel runners are being deprecated and queue
+          # unreliably. Apple Silicon is covered (macos-14/arm64); Intel installs from the sdist.
           - { runner: macos-14, target: aarch64 }
           - { runner: windows-latest, target: x64 }
     steps:

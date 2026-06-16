@@ -1,13 +1,13 @@
-# Proposition upstream pour pyhocon (brouillon)
+# Upstream proposal for pyhocon (draft)
 
-> Texte prêt à poster comme **issue** sur `chimpler/pyhocon` (les Discussions y sont désactivées).
-> **À ne poster qu'après un premier release de `pulse-pyhocon` sur PyPI** (pour que le mainteneur
-> puisse `pip install pulse-pyhocon` et reproduire), et après relecture. Ton : respectueux, non
-> intrusif, charge de maintenance minimale pour eux.
+> Text ready to post as an **issue** on `chimpler/pyhocon` (Discussions are disabled there).
+> **Only post it after a first `pulse-pyhocon` release on PyPI** (so the maintainer can
+> `pip install pulse-pyhocon` and reproduce), and after a review. Tone: respectful, non-intrusive,
+> minimal maintenance burden for them.
 
 ---
 
-**Titre** : Proposal: optional Rust-accelerated parsing backend (drop-in, with pure-Python fallback)
+**Title**: Proposal: optional Rust-accelerated parsing backend (drop-in, with pure-Python fallback)
 
 Hi @darthbear, and thanks for maintaining pyhocon 🙏
 
