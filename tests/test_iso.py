@@ -108,24 +108,46 @@ def test_iso_core(text):
     assert _outcome(pulse_pyhocon.parse, text) == _outcome(_ref, text)
 
 
-# Auto-référence & navigation à travers une substitution : idiomes HOCON courants que pyhocon
-# RÉSOUT (ex. `path = ${path}":/usr/bin"`). Le noyau natif ne les gère pas → fallback transparent
-# → iso. Régression historique : ces cas levaient à tort ConfigSubstitutionException (bug iso).
+# Auto-référence — pyhocon résout `${k}` (dans la valeur qui écrase `k`) vers la valeur PRÉCÉDENTE
+# (ex. `path = ${path}":/usr/bin"`). Idiomes courants à valeur précédente CONCRÈTE → résolus en NATIF ;
+# valeur précédente non-concrète / chemin absolu / nav-à-travers-subst → fallback transparent. Tous iso.
+# (Régression historique corrigée : ces cas levaient à tort ConfigSubstitutionException.)
 SELFREF = [
-    "a = 1\na = ${a}",                                   # auto-réf simple -> 1
-    'p = "/bin"\np = ${p}":/usr/bin"',                   # self-concat (motif PATH) -> "/bin:/usr/bin"
-    "a = [1]\na = ${a} [2]",                             # self-append -> [1, 2]
-    "x { a = 1 }\nx { a = ${x.a} }",                     # auto-réf imbriquée
-    "a = { b = 1 }\na = ${a} { c = 2 }",                 # self-merge objet
-    "n = 1\nn = ${n} 2",                                 # self-concat string -> "1 2"
-    "base = { host = h }\nx = ${base}\ny = ${x.host}",   # nav de chemin À TRAVERS une substitution
-    "a = { b = { c = 1 } }\nd = ${a}\ne = ${d.b.c}",     # nav profonde à travers subst
-    "a = ${a}",                                          # auto-réf sans valeur préalable -> pyhocon LÈVE
+    "a = 1\na = ${a}",                                   # -> 1 (natif)
+    'p = "/bin"\np = ${p}":/usr/bin"',                   # -> "/bin:/usr/bin" (natif)
+    "p = /a\np = ${p}:/b",                               # suffixe non-quoté (natif)
+    "a = [1]\na = ${a} [2]",                             # -> [1, 2] (natif)
+    "a = [1]\na = ${a}[2]",                              # sans espace (natif)
+    "a = { b = 1 }\na = ${a} { c = 2 }",                 # self-merge objet (natif)
+    "n = 1\nn = ${n} 2",                                 # -> "1 2" (natif)
+    "a = 1\na = ${a}\na = ${a}",                         # double override (natif)
+    "a = ${b}\na = ${a}\nb = 5",                         # valeur préc. non-concrète -> fallback (pyhocon LÈVE)
+    "x { a = 1 }\nx { a = ${x.a} }",                     # chemin absolu imbriqué -> fallback
+    "base = { host = h }\nx = ${base}\ny = ${x.host}",   # nav à travers subst -> fallback
+    "a = { b = { c = 1 } }\nd = ${a}\ne = ${d.b.c}",     # nav profonde -> fallback
+    "a = ${a}",                                          # sans valeur préalable -> pyhocon LÈVE (fallback)
 ]
 
 
 @pytest.mark.parametrize("text", SELFREF)
 def test_iso_self_reference(text):
+    assert _outcome(pulse_pyhocon.parse, text) == _outcome(_ref, text)
+
+
+# Mot-clé nu true/false dans un run non-quoté multi-tokens : pyhocon le TYPE (-> "True"/"False" en
+# concat string), le natif fallback transparent -> iso. (null exclu : pyhocon rend un repr NoneValue
+# avec adresse mémoire, non déterministe même pyhocon-vs-pyhocon.)
+KEYWORD_CONCAT = [
+    "m = foo true",
+    "m = a true b",
+    "a = x\nm = ${a} true",
+    "a = x\nm = ${a} false bar",
+    "p = base\np = ${p} true",
+]
+
+
+@pytest.mark.parametrize("text", KEYWORD_CONCAT)
+def test_iso_keyword_concat(text):
     assert _outcome(pulse_pyhocon.parse, text) == _outcome(_ref, text)
 
 

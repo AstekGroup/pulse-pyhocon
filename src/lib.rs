@@ -272,7 +272,7 @@ impl Parser {
             // contexte) → fallback transparent vers pyhocon.
             return Err(HoconError::Unsupported("valeur vide".into()));
         }
-        Ok(build_value(parts))
+        build_value(parts)
     }
 
     fn parse_subst(&mut self) -> Result<(Vec<String>, bool), HoconError> {
@@ -427,7 +427,13 @@ fn parse_include_spec(raw: &str) -> Result<IncludeSpec, HoconError> {
     }
 }
 
-fn build_value(parts: Vec<RawPart>) -> Value {
+/// Mot-clé HOCON typé (true/false/null, insensible à la casse). pyhocon les TYPE même au milieu d'un
+/// run non-quoté (et `null` → repr `NoneValue` AVEC adresse mémoire, donc non déterministe/réplicable).
+fn is_bare_kw(tok: &str) -> bool {
+    tok.eq_ignore_ascii_case("true") || tok.eq_ignore_ascii_case("false") || tok.eq_ignore_ascii_case("null")
+}
+
+fn build_value(parts: Vec<RawPart>) -> Result<Value, HoconError> {
     let non_ws: Vec<usize> = parts
         .iter()
         .enumerate()
@@ -436,15 +442,31 @@ fn build_value(parts: Vec<RawPart>) -> Value {
         .collect();
 
     if non_ws.len() == 1 {
-        return match &parts[non_ws[0]] {
+        return Ok(match &parts[non_ws[0]] {
             RawPart::Sub { path, optional } => Value::Subst { path: path.clone(), optional: *optional },
             RawPart::Quoted(s) => Value::Str(s.clone()),
             RawPart::Obj(m) => Value::Obj(m.clone()),
             RawPart::Arr(a) => Value::Arr(a.clone()),
-            RawPart::Text(t) => classify(t.trim()),
-        };
+            RawPart::Text(t) => {
+                let tr = t.trim();
+                // valeur non-quotée MULTI-tokens contenant un mot-clé nu → pyhocon le type (divergence,
+                // null non réplicable) → fallback. (Un mot-clé SEUL est correctement typé par classify.)
+                if tr.split_whitespace().count() > 1 && tr.split_whitespace().any(is_bare_kw) {
+                    return Err(HoconError::Unsupported("mot-clé nu (true/false/null) en valeur multi-tokens".into()));
+                }
+                classify(tr)
+            }
+        });
     }
-    // plusieurs unités → concaténation (type décidé à la résolution)
+    // plusieurs unités → concaténation. Un segment de texte contenant un mot-clé nu serait typé par
+    // pyhocon (≠ texte côté natif) → fallback transparent.
+    for p in &parts {
+        if let RawPart::Text(t) = p {
+            if t.split_whitespace().any(is_bare_kw) {
+                return Err(HoconError::Unsupported("mot-clé nu (true/false/null) en concaténation".into()));
+            }
+        }
+    }
     let segs = parts
         .into_iter()
         .map(|p| match p {
@@ -455,7 +477,7 @@ fn build_value(parts: Vec<RawPart>) -> Value {
             RawPart::Text(t) => CSeg::Text(t),
         })
         .collect();
-    Value::Concat(segs)
+    Ok(Value::Concat(segs))
 }
 
 fn classify(t: &str) -> Value {
@@ -551,9 +573,78 @@ fn split_head(key: &str, value: Value) -> (String, Value) {
     }
 }
 
+/// Valeur entièrement RÉSOLUE (aucune substitution/concat en attente, récursivement). L'auto-référence
+/// native n'est sûre que vers une telle valeur : si la valeur précédente contient un `${…}` non résolu,
+/// la sémantique pyhocon diffère (peut lever) → on laisse alors le cas au fallback.
+fn is_concrete(v: &Value) -> bool {
+    match v {
+        Value::Subst { .. } | Value::Concat(_) => false,
+        Value::Arr(items) => items.iter().all(is_concrete),
+        Value::Obj(m) => m.iter().all(|(_, vv)| is_concrete(vv)),
+        _ => true, // Null / Bool / Int / BigInt / Float / Str
+    }
+}
+
+/// Navigue la valeur précédente `prior` par le reste d'un chemin de substitution (`${k.rest…}`).
+/// `rest` vide → `prior` lui-même. None si la navigation échoue OU si la valeur atteinte n'est pas
+/// concrète (→ on ne réécrit pas, fallback iso).
+fn navigate_prior(prior: &Value, rest: &[String]) -> Option<Value> {
+    let mut cur = prior;
+    for seg in rest {
+        match cur {
+            Value::Obj(m) => cur = &m.iter().find(|(k, _)| k == seg)?.1,
+            _ => return None,
+        }
+    }
+    if is_concrete(cur) {
+        Some(cur.clone())
+    } else {
+        None
+    }
+}
+
+/// Résolution d'AUTO-RÉFÉRENCE HOCON : quand la valeur entrante (qui écrase la clé `key`) contient
+/// `${key}` / `${key.sub}` au niveau top OU dans un segment de `Concat`, ce `${…}` se résout vers la
+/// **valeur précédente** de `key` (idiome `p = ${p}":/usr/bin"`, `a = ${a} [2]`, `a = ${a} {c=2}`).
+/// On ne réécrit QUE ces self-refs immédiates ; les self-refs par chemin absolu imbriqué ou la
+/// navigation à travers une substitution restent non réécrites → échec de résolution → fallback (iso).
+fn substitute_self_ref(value: Value, key: &str, prior: &Value) -> Value {
+    let is_self = |path: &[String]| path.first().map(|s| s == key).unwrap_or(false);
+    match value {
+        Value::Subst { path, optional } => {
+            if is_self(&path) {
+                if let Some(v) = navigate_prior(prior, &path[1..]) {
+                    return v;
+                }
+            }
+            Value::Subst { path, optional }
+        }
+        Value::Concat(segs) => {
+            let new_segs = segs
+                .into_iter()
+                .map(|seg| match seg {
+                    CSeg::Sub { path, optional } => {
+                        if is_self(&path) {
+                            if let Some(v) = navigate_prior(prior, &path[1..]) {
+                                return CSeg::Val(v);
+                            }
+                        }
+                        CSeg::Sub { path, optional }
+                    }
+                    other => other,
+                })
+                .collect();
+            Value::Concat(new_segs)
+        }
+        other => other,
+    }
+}
+
 fn merge_into(members: &mut Vec<(String, Value)>, key: String, value: Value) {
-    if let Some(slot) = members.iter_mut().find(|(k, _)| *k == key) {
-        match (&mut slot.1, value) {
+    if let Some(idx) = members.iter().position(|(k, _)| *k == key) {
+        // self-référence : `${key}` dans la valeur qui écrase `key` → valeur PRÉCÉDENTE (HOCON).
+        let value = substitute_self_ref(value, &key, &members[idx].1);
+        match (&mut members[idx].1, value) {
             (Value::Obj(existing), Value::Obj(incoming)) => {
                 for (k, v) in incoming {
                     merge_into(existing, k, v);
