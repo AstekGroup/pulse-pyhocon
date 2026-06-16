@@ -1,6 +1,6 @@
 [package]
 name = "pulse_pyhocon"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 license = "Apache-2.0"
 description = "Rust/PyO3 core of pulse-pyhocon: native HOCON parser, iso drop-in for pyhocon"

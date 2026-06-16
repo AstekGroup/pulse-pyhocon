@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "pulse-pyhocon"
-version = "0.2.0"
+version = "0.2.1"
 description = "Rust/PyO3 accelerator for pyhocon: a native, iso-functional HOCON parser with transparent fallback to pyhocon."
 requires-python = ">=3.11"
 license = { text = "Apache-2.0" }
