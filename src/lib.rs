@@ -3,12 +3,16 @@
 //!
 //! SLICE 1 : objets/tableaux/scalaires, clés pointées, fusion profonde, commentaires.
 //! SLICE 2 : substitutions `${path}`/`${?path}` (type préservé si seule, concat string, chemins
-//!   pointés, réfs avant/arrière, sub→sub, optionnel omis, fallback env ; erreurs → ConfigSubstitutionException).
+//!   pointés, réfs avant/arrière, sub→sub, optionnel omis, fallback env).
 //! SLICE 3 : `include` de fichiers (base dir tracké, fusion au point d'include, required → FileNotFoundError).
 //! SLICE 4 : concaténation d'objets (merge profond) et d'arrays (concat), littéraux ET substitutions,
-//!   avec/sans espace ; mixte objet|array + scalaire → ConfigWrongTypeException.
-//! EXCLU (documenté) : auto-référence ; navigation de chemin à travers une substitution ;
-//!   `include url(...)`/`classpath(...)` ; `+=` ; triple-quotes ; durations/sizes ; parité de MESSAGE.
+//!   avec/sans espace.
+//!
+//! PRINCIPE D'ISO : le natif ne gère QUE le chemin heureux. TOUT échec de résolution de substitution
+//!   (auto-référence `a = ${a}`, self-concat `p = ${p}":x"`, navigation de chemin à travers une
+//!   substitution `${x.host}`, variable absente, cycle, type incompatible…) lève `NotImplementedError`
+//!   → le wrapper délègue à pyhocon (l'ORACLE : il résout, ou lève la bonne exception). Idem
+//!   `include url(...)`/`classpath(...)`, `+=`, clés quotées spéciales. Donc jamais de divergence.
 
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
@@ -351,10 +355,9 @@ impl Parser {
         }
         let spec = parse_include_spec(raw.trim())?;
         if !spec.supported {
-            if spec.required {
-                return Err(format!("include {}(...) hors périmètre", spec.kind).into());
-            }
-            return Ok(());
+            // include url(...)/classpath(...) : pyhocon va chercher la ressource (et la fusionne, ou
+            // lève). On NE peut PAS l'ignorer silencieusement (divergence) → fallback transparent.
+            return Err(HoconError::Unsupported(format!("include {}(...) hors périmètre", spec.kind)));
         }
         let full = if self.base.as_os_str().is_empty() {
             PathBuf::from(&spec.path)
@@ -419,7 +422,8 @@ fn parse_include_spec(raw: &str) -> Result<IncludeSpec, HoconError> {
     if s.len() >= 2 && s.starts_with('"') && s.ends_with('"') {
         Ok(IncludeSpec { path: s[1..s.len() - 1].to_string(), required, kind, supported })
     } else {
-        Err(format!("include: chemin quoté attendu, vu {:?}", raw).into())
+        // include malformé (chemin non quoté…) : pyhocon a sa propre sémantique/erreur → fallback.
+        Err(HoconError::Unsupported(format!("include non quoté: {:?}", raw)))
     }
 }
 
@@ -749,18 +753,6 @@ fn value_to_py<'py>(py: Python<'py>, v: &Value) -> PyResult<Bound<'py, PyAny>> {
     })
 }
 
-/// Lève l'exception pyhocon de classe `name` (parité de TYPE) ; repli ValueError si indisponible.
-fn pyhocon_exc(py: Python<'_>, name: &str, msg: String) -> PyErr {
-    let built = py
-        .import("pyhocon.exceptions")
-        .and_then(|m| m.getattr(name))
-        .and_then(|cls| cls.call1((msg.as_str(),)));
-    match built {
-        Ok(inst) => PyErr::from_value(inst),
-        Err(_) => pyo3::exceptions::PyValueError::new_err(msg),
-    }
-}
-
 /// Drop-in de `ConfigFactory.parse_string(s)` → dict imbriqué.
 #[pyfunction]
 fn parse(py: Python<'_>, s: &str) -> PyResult<PyObject> {
@@ -779,8 +771,14 @@ fn parse(py: Python<'_>, s: &str) -> PyResult<PyObject> {
     let mut stack = Vec::new();
     let resolved = match resolve_node(&tree, &tree, &mut stack) {
         Ok(r) => r.unwrap_or(Value::Obj(Vec::new())),
-        Err(ResolveError::Subst(m)) => return Err(pyhocon_exc(py, "ConfigSubstitutionException", m)),
-        Err(ResolveError::WrongType(m)) => return Err(pyhocon_exc(py, "ConfigWrongTypeException", m)),
+        // Tout ÉCHEC de résolution → fallback transparent vers pyhocon (l'oracle tranche). Le natif
+        // ne gère que le chemin heureux ; pour tout ce qu'il ne résout pas — auto-référence
+        // (`a = ${a}`), self-concat (`p = ${p}":x"`), navigation de chemin à travers une
+        // substitution (`${x.host}` où x=${base})… que pyhocon RÉSOUT, comme les vraies erreurs
+        // (variable absente, cycle, type incompatible) que pyhocon LÈVE — on délègue. iso garantie.
+        Err(ResolveError::Subst(m)) | Err(ResolveError::WrongType(m)) => {
+            return Err(pyo3::exceptions::PyNotImplementedError::new_err(m))
+        }
     };
     Ok(value_to_py(py, &resolved)?.unbind())
 }

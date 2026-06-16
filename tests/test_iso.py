@@ -106,6 +106,27 @@ def test_iso_core(text):
     assert _outcome(pulse_pyhocon.parse, text) == _outcome(_ref, text)
 
 
+# Auto-référence & navigation à travers une substitution : idiomes HOCON courants que pyhocon
+# RÉSOUT (ex. `path = ${path}":/usr/bin"`). Le noyau natif ne les gère pas → fallback transparent
+# → iso. Régression historique : ces cas levaient à tort ConfigSubstitutionException (bug iso).
+SELFREF = [
+    "a = 1\na = ${a}",                                   # auto-réf simple -> 1
+    'p = "/bin"\np = ${p}":/usr/bin"',                   # self-concat (motif PATH) -> "/bin:/usr/bin"
+    "a = [1]\na = ${a} [2]",                             # self-append -> [1, 2]
+    "x { a = 1 }\nx { a = ${x.a} }",                     # auto-réf imbriquée
+    "a = { b = 1 }\na = ${a} { c = 2 }",                 # self-merge objet
+    "n = 1\nn = ${n} 2",                                 # self-concat string -> "1 2"
+    "base = { host = h }\nx = ${base}\ny = ${x.host}",   # nav de chemin À TRAVERS une substitution
+    "a = { b = { c = 1 } }\nd = ${a}\ne = ${d.b.c}",     # nav profonde à travers subst
+    "a = ${a}",                                          # auto-réf sans valeur préalable -> pyhocon LÈVE
+]
+
+
+@pytest.mark.parametrize("text", SELFREF)
+def test_iso_self_reference(text):
+    assert _outcome(pulse_pyhocon.parse, text) == _outcome(_ref, text)
+
+
 INCLUDES = [
     ('include "sub.conf"\nmore = 2', {"sub.conf": 'x = 1\ny = "z"\n'}),
     ('include file("sub.conf")', {"sub.conf": "x = 1\n"}),

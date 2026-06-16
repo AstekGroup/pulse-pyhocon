@@ -31,7 +31,12 @@ fichiers, **concaténation** d'objets (merge) et de tableaux. Parité des except
 (`ConfigSubstitutionException`, `ConfigWrongTypeException`, `FileNotFoundError`).
 
 **Délégué au fallback pyhocon** (corrects, sans gain) : `+=` (implémentation pyhocon spécifique),
-clés quotées à caractères spéciaux, valeurs vides, et tout construct hors chemin rapide.
+clés quotées à caractères spéciaux, valeurs vides, `include url(...)`/`classpath(...)`, et — point
+clé pour l'iso — **tout échec de résolution de substitution** : auto-référence (`a = ${a}`),
+self-concaténation (`path = ${path}":/usr/bin"`), self-append/merge, et navigation de chemin à
+travers une substitution (`${x.host}` où `x = ${base}`). Le noyau natif ne tente que le chemin
+heureux ; dès qu'il ne sait pas résoudre, il délègue à pyhocon (l'oracle), qui résout ces idiomes
+HOCON ou lève la bonne exception. **Garantie : jamais de divergence**, même sur ces cas limites.
 
 ## Installation
 
@@ -46,8 +51,9 @@ le fallback pur-Python si l'extension native n'est pas disponible.
 ## Statut
 
 Alpha. API : `pulse_pyhocon.parse(text) -> dict`. `pulse_pyhocon.BACKEND` vaut `"rust"` ou `"python"`.
-Voir les *issues* pour le périmètre et la feuille de route (substitutions auto-référentes, includes
-url/classpath, …).
+Feuille de route : résolution native (au lieu du fallback) de l'auto-référence et de la navigation à
+travers une substitution ; includes url/classpath ; et, à terme, un retour `ConfigTree` complet
+(getters typés, `with_fallback`, `HOCONConverter`) pour une compatibilité d'API totale.
 
 ## Licence & crédits
 
