@@ -1,18 +1,17 @@
-//! pulse_pyhocon — parseur HOCON Rust (drop-in du hotspot `ConfigFactory.parse_string`, axe B).
-//! Le goulot de pyhocon est la machinerie pyparsing INTERPRÉTÉE (~1 % regex C) → cible idéale.
+//! pulse_pyhocon — native HOCON parser in Rust (drop-in for the `ConfigFactory.parse_string` hotspot).
+//! pyhocon's bottleneck is the INTERPRETED pyparsing machinery (~1% C regex) → an ideal target.
 //!
-//! SLICE 1 : objets/tableaux/scalaires, clés pointées, fusion profonde, commentaires.
-//! SLICE 2 : substitutions `${path}`/`${?path}` (type préservé si seule, concat string, chemins
-//!   pointés, réfs avant/arrière, sub→sub, optionnel omis, fallback env).
-//! SLICE 3 : `include` de fichiers (base dir tracké, fusion au point d'include, required → FileNotFoundError).
-//! SLICE 4 : concaténation d'objets (merge profond) et d'arrays (concat), littéraux ET substitutions,
-//!   avec/sans espace.
+//! Covered natively: objects/arrays/scalars, dotted keys, deep merge, comments; substitutions
+//!   `${path}`/`${?path}` (type preserved when alone, string concat, dotted paths, forward/backward
+//!   refs, sub→sub, optional omitted, env fallback); file `include`s (tracked base dir, merged at the
+//!   include point, required → FileNotFoundError); object (deep merge) and array (concat)
+//!   concatenation; self-reference (`p = ${p}":/usr/bin"`).
 //!
-//! PRINCIPE D'ISO : le natif ne gère QUE le chemin heureux. TOUT échec de résolution de substitution
-//!   (auto-référence `a = ${a}`, self-concat `p = ${p}":x"`, navigation de chemin à travers une
-//!   substitution `${x.host}`, variable absente, cycle, type incompatible…) lève `NotImplementedError`
-//!   → le wrapper délègue à pyhocon (l'ORACLE : il résout, ou lève la bonne exception). Idem
-//!   `include url(...)`/`classpath(...)`, `+=`, clés quotées spéciales. Donc jamais de divergence.
+//! ISO PRINCIPLE: the native core only handles the happy path. ANY substitution-resolution failure
+//!   (self-reference `a = ${a}`, self-concat `p = ${p}":x"`, path navigation through a substitution
+//!   `${x.host}`, undefined variable, cycle, type mismatch…) raises `NotImplementedError` → the wrapper
+//!   delegates to pyhocon (the ORACLE: it resolves, or raises the right exception). Likewise
+//!   `include url(...)`/`classpath(...)`, `+=`, special quoted keys. So: never a divergence.
 
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
@@ -23,7 +22,7 @@ enum Value {
     Null,
     Bool(bool),
     Int(i64),
-    BigInt(String), // entier hors i64 → int Python (précision arbitraire)
+    BigInt(String), // integer beyond i64 → Python int (arbitrary precision)
     Float(f64),
     Str(String),
     Arr(Vec<Value>),
@@ -32,11 +31,11 @@ enum Value {
     Concat(Vec<CSeg>),
 }
 
-/// Segment d'une concaténation de valeurs (résolue en merge / concat / string selon les types).
+/// Segment of a value concatenation (resolved to merge / concat / string depending on the types).
 #[derive(Clone, Debug)]
 enum CSeg {
-    Val(Value),          // objet / array / string quotée (non résolus)
-    Text(String),        // texte unquoted brut (peut n'être que de l'espace)
+    Val(Value),          // object / array / quoted string (unresolved)
+    Text(String),        // raw unquoted text (may be whitespace only)
     Sub { path: Vec<String>, optional: bool },
 }
 
@@ -52,7 +51,7 @@ enum RawPart {
 enum HoconError {
     Parse(String),        // -> ValueError
     FileNotFound(String), // -> FileNotFoundError
-    Unsupported(String),  // -> NotImplementedError → fallback transparent vers pyhocon (wrapper)
+    Unsupported(String),  // -> NotImplementedError → transparent fallback to pyhocon (wrapper)
 }
 impl From<&str> for HoconError {
     fn from(s: &str) -> Self {
@@ -65,13 +64,13 @@ impl From<String> for HoconError {
     }
 }
 
-/// Erreurs de la passe de résolution. Toutes routées vers le fallback transparent (pyhocon tranche) :
-/// le natif ne gère que ce qu'il peut rendre à l'identique.
+/// Resolution-pass errors. All routed to the transparent fallback (pyhocon decides): the native core
+/// only handles what it can reproduce identically.
 #[derive(Debug)]
 enum ResolveError {
-    Subst(String),     // substitution non résolvable (auto-réf non concrète, cycle, absente…)
-    WrongType(String), // objet/array dans une concaténation string
-    Fallback(String),  // rendu non garanti iso (ex. float extrême en concat → str(float) Python)
+    Subst(String),     // unresolvable substitution (non-concrete self-ref, cycle, undefined…)
+    WrongType(String), // object/array inside a string concatenation
+    Fallback(String),  // rendering not guaranteed iso (e.g. extreme float in concat → Python str(float))
 }
 
 struct Parser {
@@ -135,7 +134,7 @@ impl Parser {
             let m = self.parse_braced_members()?;
             self.skip_separators();
             if self.peek().is_some() {
-                return Err("contenu après l'objet racine".into());
+                return Err("content after the root object".into());
             }
             Ok(Value::Obj(m))
         } else {
@@ -145,11 +144,11 @@ impl Parser {
 
     fn parse_braced_members(&mut self) -> Result<Vec<(String, Value)>, HoconError> {
         if self.bump() != Some('{') {
-            return Err("'{' attendu".into());
+            return Err("expected '{'".into());
         }
         let members = self.parse_members_until(Some('}'))?;
         if self.bump() != Some('}') {
-            return Err("'}' attendu".into());
+            return Err("expected '}'".into());
         }
         Ok(members)
     }
@@ -161,7 +160,7 @@ impl Parser {
             match self.peek() {
                 None => {
                     if close.is_some() {
-                        return Err("'}' manquant".into());
+                        return Err("missing '}'".into());
                     }
                     break;
                 }
@@ -170,20 +169,20 @@ impl Parser {
             }
             let (key, quoted) = self.parse_key()?;
             self.skip_inline();
-            // directive `include` : uniquement si NON quotée (`"include"` est une clé littérale)
+            // `include` directive: only when NOT quoted (`"include"` is a literal key)
             if key == "include" && !quoted && !matches!(self.peek(), Some('=') | Some(':') | Some('{')) {
                 self.process_include(&mut members)?;
                 continue;
             }
-            // `+=` : pyhocon 0.3.63 l'implémente de façon buggée → fallback transparent (wrapper).
+            // `+=`: pyhocon 0.3.63 implements it in a buggy way → transparent fallback (wrapper).
             if self.peek() == Some('+') && self.peek2() == Some('=') {
-                return Err(HoconError::Unsupported("opérateur '+='".into()));
+                return Err(HoconError::Unsupported("'+=' operator".into()));
             }
-            // Clé quotée à caractères spéciaux : pyhocon garde les guillemets / ne split pas, de
-            // façon quirky → fallback transparent. Une quoted-key « identifiant simple » est, elle,
-            // strippée comme une clé nue (comportement iso direct).
+            // Quoted key with special characters: pyhocon keeps the quotes / does not split, in a quirky
+            // way → transparent fallback. A "simple identifier" quoted key is, on the other hand,
+            // stripped like a bare key (directly iso behavior).
             if quoted && !is_safe_key(&key) {
-                return Err(HoconError::Unsupported("clé quotée à caractères spéciaux".into()));
+                return Err(HoconError::Unsupported("quoted key with special characters".into()));
             }
             let value = match self.peek() {
                 Some('=') | Some(':') => {
@@ -191,12 +190,12 @@ impl Parser {
                     self.skip_inline();
                     self.parse_value()?
                 }
-                // `a { ... }` : l'objet EST la valeur complète (pas de concaténation greedy)
+                // `a { ... }`: the object IS the whole value (no greedy concatenation)
                 Some('{') => Value::Obj(self.parse_braced_members()?),
-                other => return Err(format!("'=' ou ':' attendu après la clé, vu {:?}", other).into()),
+                other => return Err(format!("expected '=' or ':' after the key, got {:?}", other).into()),
             };
             if quoted {
-                merge_into(&mut members, key, value); // segment littéral, jamais dot-splité
+                merge_into(&mut members, key, value); // literal segment, never dot-split
             } else {
                 let (head, sub) = split_head(&key, value);
                 merge_into(&mut members, head, sub);
@@ -205,7 +204,7 @@ impl Parser {
         Ok(members)
     }
 
-    /// Renvoie (clé, quotée?). Une clé quotée est un segment LITTÉRAL (jamais dot-splitée).
+    /// Returns (key, quoted?). A quoted key is a LITERAL segment (never dot-split).
     fn parse_key(&mut self) -> Result<(String, bool), HoconError> {
         if self.peek() == Some('"') {
             return Ok((self.parse_quoted()?, true));
@@ -216,7 +215,7 @@ impl Parser {
                 break;
             }
             if ch == '+' && self.peek2() == Some('=') {
-                break; // `key+=` sans espace : laisser détecter l'opérateur +=
+                break; // `key+=` without space: let the += operator be detected
             }
             if ch == '#' || (ch == '/' && self.peek2() == Some('/')) {
                 break;
@@ -225,13 +224,13 @@ impl Parser {
             self.i += 1;
         }
         if s.is_empty() {
-            return Err("clé vide".into());
+            return Err("empty key".into());
         }
         Ok((s, false))
     }
 
-    /// Une valeur = suite d'UNITÉS (objet / array / quoted / substitution / texte) jusqu'au
-    /// terminateur. Une seule unité → cette valeur ; plusieurs → concaténation (slice 2 & 4).
+    /// A value = sequence of UNITS (object / array / quoted / substitution / text) up to the
+    /// terminator. A single unit → that value; several → concatenation.
     fn parse_value(&mut self) -> Result<Value, HoconError> {
         self.skip_inline();
         let mut parts: Vec<RawPart> = Vec::new();
@@ -250,8 +249,8 @@ impl Parser {
                 Some(_) => {
                     let mut t = String::new();
                     loop {
-                        // `#` et `//` ne démarrent un commentaire que précédés d'un espace (ou en
-                        // tête de valeur) — sinon ils sont littéraux (ex. `a//b`, `http://x`).
+                        // `#` and `//` only start a comment when preceded by whitespace (or at the
+                        // start of the value) — otherwise they are literal (e.g. `a//b`, `http://x`).
                         let prev_ws = t.chars().last().is_none_or(|c| c.is_whitespace());
                         match self.peek() {
                             None | Some('\n') | Some(',') | Some('}') | Some(']') => break,
@@ -270,9 +269,9 @@ impl Parser {
             }
         }
         if parts.is_empty() {
-            // valeur vide (`a =`) : règle pyhocon incohérente (str "" ou ParseException selon le
-            // contexte) → fallback transparent vers pyhocon.
-            return Err(HoconError::Unsupported("valeur vide".into()));
+            // empty value (`a =`): pyhocon's rule is inconsistent (str "" or ParseException depending
+            // on context) → transparent fallback to pyhocon.
+            return Err(HoconError::Unsupported("empty value".into()));
         }
         build_value(parts)
     }
@@ -289,7 +288,7 @@ impl Parser {
         let mut p = String::new();
         loop {
             match self.bump() {
-                None => return Err("'}' manquant dans la substitution".into()),
+                None => return Err("missing '}' in substitution".into()),
                 Some('}') => break,
                 Some(ch) => p.push(ch),
             }
@@ -308,7 +307,7 @@ impl Parser {
                     self.bump();
                     break;
                 }
-                None => return Err("']' manquant".into()),
+                None => return Err("missing ']'".into()),
                 _ => {}
             }
             items.push(self.parse_value()?);
@@ -321,7 +320,7 @@ impl Parser {
         let mut s = String::new();
         loop {
             match self.bump() {
-                None => return Err("guillemet fermant manquant".into()),
+                None => return Err("missing closing quote".into()),
                 Some('"') => break,
                 Some('\\') => match self.bump() {
                     Some('n') => s.push('\n'),
@@ -334,7 +333,7 @@ impl Parser {
                         s.push('\\');
                         s.push(other);
                     }
-                    None => return Err("échappement incomplet".into()),
+                    None => return Err("incomplete escape".into()),
                 },
                 Some(ch) => s.push(ch),
             }
@@ -357,9 +356,9 @@ impl Parser {
         }
         let spec = parse_include_spec(raw.trim())?;
         if !spec.supported {
-            // include url(...)/classpath(...) : pyhocon va chercher la ressource (et la fusionne, ou
-            // lève). On NE peut PAS l'ignorer silencieusement (divergence) → fallback transparent.
-            return Err(HoconError::Unsupported(format!("include {}(...) hors périmètre", spec.kind)));
+            // include url(...)/classpath(...): pyhocon fetches the resource (and merges it, or raises).
+            // We must NOT silently ignore it (divergence) → transparent fallback.
+            return Err(HoconError::Unsupported(format!("include {}(...) out of scope", spec.kind)));
         }
         let full = if self.base.as_os_str().is_empty() {
             PathBuf::from(&spec.path)
@@ -424,13 +423,13 @@ fn parse_include_spec(raw: &str) -> Result<IncludeSpec, HoconError> {
     if s.len() >= 2 && s.starts_with('"') && s.ends_with('"') {
         Ok(IncludeSpec { path: s[1..s.len() - 1].to_string(), required, kind, supported })
     } else {
-        // include malformé (chemin non quoté…) : pyhocon a sa propre sémantique/erreur → fallback.
-        Err(HoconError::Unsupported(format!("include non quoté: {:?}", raw)))
+        // malformed include (unquoted path…): pyhocon has its own semantics/error → fallback.
+        Err(HoconError::Unsupported(format!("unquoted include: {:?}", raw)))
     }
 }
 
-/// Mot-clé HOCON typé (true/false/null, insensible à la casse). pyhocon les TYPE même au milieu d'un
-/// run non-quoté (et `null` → repr `NoneValue` AVEC adresse mémoire, donc non déterministe/réplicable).
+/// Typed HOCON keyword (true/false/null, case-insensitive). pyhocon TYPES them even in the middle of an
+/// unquoted run (and `null` → `NoneValue` repr WITH a memory address, hence non-deterministic/unreplicable).
 fn is_bare_kw(tok: &str) -> bool {
     tok.eq_ignore_ascii_case("true") || tok.eq_ignore_ascii_case("false") || tok.eq_ignore_ascii_case("null")
 }
@@ -451,21 +450,21 @@ fn build_value(parts: Vec<RawPart>) -> Result<Value, HoconError> {
             RawPart::Arr(a) => Value::Arr(a.clone()),
             RawPart::Text(t) => {
                 let tr = t.trim();
-                // valeur non-quotée MULTI-tokens contenant un mot-clé nu → pyhocon le type (divergence,
-                // null non réplicable) → fallback. (Un mot-clé SEUL est correctement typé par classify.)
+                // unquoted MULTI-token value containing a bare keyword → pyhocon types it (divergence,
+                // and `null` is unreplicable) → fallback. (A lone keyword is correctly typed by classify.)
                 if tr.split_whitespace().count() > 1 && tr.split_whitespace().any(is_bare_kw) {
-                    return Err(HoconError::Unsupported("mot-clé nu (true/false/null) en valeur multi-tokens".into()));
+                    return Err(HoconError::Unsupported("bare keyword (true/false/null) in multi-token value".into()));
                 }
                 classify(tr)
             }
         });
     }
-    // plusieurs unités → concaténation. Un segment de texte contenant un mot-clé nu serait typé par
-    // pyhocon (≠ texte côté natif) → fallback transparent.
+    // several units → concatenation. A text segment containing a bare keyword would be typed by
+    // pyhocon (≠ text on the native side) → transparent fallback.
     for p in &parts {
         if let RawPart::Text(t) = p {
             if t.split_whitespace().any(is_bare_kw) {
-                return Err(HoconError::Unsupported("mot-clé nu (true/false/null) en concaténation".into()));
+                return Err(HoconError::Unsupported("bare keyword (true/false/null) in concatenation".into()));
             }
         }
     }
@@ -496,7 +495,7 @@ fn classify(t: &str) -> Value {
         return Value::Int(i);
     }
     if is_int_token(t) {
-        return Value::BigInt(t.to_string()); // entier valide mais > i64 → int Python
+        return Value::BigInt(t.to_string()); // valid integer but beyond i64 → Python int
     }
     if is_hocon_float(t) {
         if let Ok(f) = t.parse::<f64>() {
@@ -506,12 +505,12 @@ fn classify(t: &str) -> Value {
     Value::Str(t.to_string())
 }
 
-/// Clé quotée « identifiant simple » (strippée comme une clé nue, iso). Sinon → fallback pyhocon.
+/// "Simple identifier" quoted key (stripped like a bare key, iso). Otherwise → pyhocon fallback.
 fn is_safe_key(k: &str) -> bool {
     !k.is_empty() && k.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
-/// Token = entier littéral valide (`[+-]?\d+`), même hors i64.
+/// Token = valid literal integer (`[+-]?\d+`), even beyond i64.
 fn is_int_token(t: &str) -> bool {
     let b = t.as_bytes();
     let mut i = 0;
@@ -575,9 +574,9 @@ fn split_head(key: &str, value: Value) -> (String, Value) {
     }
 }
 
-/// Valeur entièrement RÉSOLUE (aucune substitution/concat en attente, récursivement). L'auto-référence
-/// native n'est sûre que vers une telle valeur : si la valeur précédente contient un `${…}` non résolu,
-/// la sémantique pyhocon diffère (peut lever) → on laisse alors le cas au fallback.
+/// Fully RESOLVED value (no pending substitution/concat, recursively). Native self-reference is only
+/// safe toward such a value: if the previous value contains an unresolved `${…}`, pyhocon's semantics
+/// differ (it may raise) → we then leave the case to the fallback.
 fn is_concrete(v: &Value) -> bool {
     match v {
         Value::Subst { .. } | Value::Concat(_) => false,
@@ -587,9 +586,9 @@ fn is_concrete(v: &Value) -> bool {
     }
 }
 
-/// Navigue la valeur précédente `prior` par le reste d'un chemin de substitution (`${k.rest…}`).
-/// `rest` vide → `prior` lui-même. None si la navigation échoue OU si la valeur atteinte n'est pas
-/// concrète (→ on ne réécrit pas, fallback iso).
+/// Navigate the previous value `prior` along the rest of a substitution path (`${k.rest…}`).
+/// Empty `rest` → `prior` itself. None if navigation fails OR if the reached value is not concrete
+/// (→ we do not rewrite, iso fallback).
 fn navigate_prior(prior: &Value, rest: &[String]) -> Option<Value> {
     let mut cur = prior;
     for seg in rest {
@@ -605,11 +604,11 @@ fn navigate_prior(prior: &Value, rest: &[String]) -> Option<Value> {
     }
 }
 
-/// Résolution d'AUTO-RÉFÉRENCE HOCON : quand la valeur entrante (qui écrase la clé `key`) contient
-/// `${key}` / `${key.sub}` au niveau top OU dans un segment de `Concat`, ce `${…}` se résout vers la
-/// **valeur précédente** de `key` (idiome `p = ${p}":/usr/bin"`, `a = ${a} [2]`, `a = ${a} {c=2}`).
-/// On ne réécrit QUE ces self-refs immédiates ; les self-refs par chemin absolu imbriqué ou la
-/// navigation à travers une substitution restent non réécrites → échec de résolution → fallback (iso).
+/// HOCON SELF-REFERENCE resolution: when the incoming value (overriding key `key`) contains
+/// `${key}` / `${key.sub}` at the top level OR in a `Concat` segment, that `${…}` resolves to the
+/// **previous** value of `key` (idiom `p = ${p}":/usr/bin"`, `a = ${a} [2]`, `a = ${a} {c=2}`).
+/// We only rewrite these immediate self-refs; absolute-path nested self-refs or navigation through a
+/// substitution stay un-rewritten → resolution failure → fallback (iso).
 fn substitute_self_ref(value: Value, key: &str, prior: &Value) -> Value {
     let is_self = |path: &[String]| path.first().map(|s| s == key).unwrap_or(false);
     match value {
@@ -644,7 +643,7 @@ fn substitute_self_ref(value: Value, key: &str, prior: &Value) -> Value {
 
 fn merge_into(members: &mut Vec<(String, Value)>, key: String, value: Value) {
     if let Some(idx) = members.iter().position(|(k, _)| *k == key) {
-        // self-référence : `${key}` dans la valeur qui écrase `key` → valeur PRÉCÉDENTE (HOCON).
+        // self-reference: `${key}` in the value overriding `key` → PREVIOUS value (HOCON).
         let value = substitute_self_ref(value, &key, &members[idx].1);
         match (&mut members[idx].1, value) {
             (Value::Obj(existing), Value::Obj(incoming)) => {
@@ -659,7 +658,7 @@ fn merge_into(members: &mut Vec<(String, Value)>, key: String, value: Value) {
     }
 }
 
-// ---------- Passe de résolution ----------
+// ---------- Resolution pass ----------
 
 fn get_raw<'a>(root: &'a Value, path: &[String]) -> Option<&'a Value> {
     let mut cur = root;
@@ -689,7 +688,7 @@ fn resolve_node(node: &Value, root: &Value, stack: &mut Vec<String>) -> Result<O
             let mut out = Vec::new();
             for (k, v) in members {
                 match resolve_node(v, root, stack)? {
-                    // quirk pyhocon : une substitution (valeur entière) résolue à null retire la clé
+                    // pyhocon quirk: a substitution (as the whole value) resolving to null drops the key
                     Some(Value::Null) if matches!(v, Value::Subst { .. }) => {}
                     Some(rv) => out.push((k.clone(), rv)),
                     None => {}
@@ -710,7 +709,7 @@ fn resolve_subst(
 ) -> Result<Option<Value>, ResolveError> {
     let key = path.join(".");
     if stack.contains(&key) {
-        return Err(ResolveError::Subst(format!("substitution circulaire ${{{}}}", key)));
+        return Err(ResolveError::Subst(format!("circular substitution ${{{}}}", key)));
     }
     if let Some(raw) = get_raw(root, path) {
         stack.push(key);
@@ -728,11 +727,11 @@ fn resolve_subst(
     }
 }
 
-/// Résout une concaténation : merge profond si toutes les unités sont des objets, concat si toutes
-/// des arrays, sinon concaténation string (objet/array dans une string → ConfigWrongTypeException).
+/// Resolve a concatenation: deep merge if all units are objects, concat if all are arrays, otherwise
+/// string concatenation (an object/array inside a string → ConfigWrongTypeException).
 fn resolve_concat(segs: &[CSeg], root: &Value, stack: &mut Vec<String>) -> Result<Option<Value>, ResolveError> {
     struct Unit {
-        val: Option<Value>, // None pour le texte, ou substitution optionnelle absente
+        val: Option<Value>, // None for text, or an absent optional substitution
         text: Option<String>,
         ws: bool,
     }
@@ -746,7 +745,7 @@ fn resolve_concat(segs: &[CSeg], root: &Value, stack: &mut Vec<String>) -> Resul
             }
         }
     }
-    // unités significatives (hors texte purement blanc)
+    // meaningful units (excluding purely-whitespace text)
     let meaningful: Vec<&Unit> = units.iter().filter(|u| !(u.text.is_some() && u.ws)).collect();
     let has_text = meaningful.iter().any(|u| u.text.is_some());
     let present: Vec<&Value> = meaningful.iter().filter_map(|u| u.val.as_ref()).collect();
@@ -771,11 +770,11 @@ fn resolve_concat(segs: &[CSeg], root: &Value, stack: &mut Vec<String>) -> Resul
         }
         return Ok(Some(Value::Arr(acc)));
     }
-    // aucune valeur présente et aucun texte significatif (ex. ${?x}${?y} tous absents) → clé omise
+    // no present value and no meaningful text (e.g. ${?x}${?y} all absent) → key omitted
     if present.is_empty() && !has_text {
         return Ok(None);
     }
-    // sinon : concaténation string
+    // otherwise: string concatenation
     let mut out = String::new();
     for u in &units {
         if let Some(t) = &u.text {
@@ -794,22 +793,22 @@ fn render_scalar(v: &Value) -> Result<String, ResolveError> {
         Value::Bool(false) => "False".into(),
         Value::Int(i) => i.to_string(),
         Value::BigInt(s) => s.clone(),
-        // Rust formate les float SANS notation scientifique ; Python `str(float)` l'utilise hors
-        // [1e-4, 1e16). Pour ces float extrêmes (ou non finis) en concaténation string, le rendu
-        // divergerait → fallback transparent (pyhocon rend). Les float « normaux » restent natifs.
+        // Rust formats floats WITHOUT scientific notation; Python `str(float)` uses it outside
+        // [1e-4, 1e16). For such extreme (or non-finite) floats in a string concatenation the rendering
+        // would diverge → transparent fallback (pyhocon renders). "Normal" floats stay native.
         Value::Float(f) if f.is_finite() && (*f == 0.0 || (f.abs() >= 1e-4 && f.abs() < 1e16)) => render_float(*f),
         Value::Float(_) => {
             return Err(ResolveError::Fallback(
-                "float hors plage de rendu iso en concaténation string".into(),
+                "float outside the iso-renderable range in string concatenation".into(),
             ))
         }
         Value::Str(s) => s.clone(),
         Value::Obj(_) | Value::Arr(_) => {
             return Err(ResolveError::WrongType(
-                "objet/array incompatible dans une concaténation string".into(),
+                "object/array not allowed in a string concatenation".into(),
             ))
         }
-        Value::Subst { .. } | Value::Concat(_) => unreachable!("non résolu"),
+        Value::Subst { .. } | Value::Concat(_) => unreachable!("unresolved"),
     })
 }
 
@@ -849,14 +848,14 @@ fn value_to_py<'py>(py: Python<'py>, v: &Value) -> PyResult<Bound<'py, PyAny>> {
             d.into_any()
         }
         Value::Subst { .. } | Value::Concat(_) => {
-            return Err(pyo3::exceptions::PyRuntimeError::new_err("nœud non résolu"))
+            return Err(pyo3::exceptions::PyRuntimeError::new_err("unresolved node"))
         }
     })
 }
 
-/// Parse HOCON → dict imbriqué (le wrapper Python l'enveloppe ensuite en `ConfigTree`).
-/// `base` : répertoire de résolution des `include` (None = cwd, comme `parse_string` ;
-/// `parse_file` passe le dossier du fichier, comme pyhocon).
+/// Parse HOCON → nested dict (the Python wrapper then wraps it into a `ConfigTree`).
+/// `base`: directory used to resolve `include`s (None = cwd, like `parse_string`; `parse_file` passes
+/// the file's directory, like pyhocon).
 #[pyfunction]
 #[pyo3(signature = (s, base=None))]
 fn parse(py: Python<'_>, s: &str, base: Option<&str>) -> PyResult<PyObject> {
@@ -873,17 +872,17 @@ fn parse(py: Python<'_>, s: &str, base: Option<&str>) -> PyResult<PyObject> {
             )))
         }
         Err(HoconError::Parse(m)) => return Err(pyo3::exceptions::PyValueError::new_err(m)),
-        // Signal de fallback transparent : le wrapper Python rattrape et délègue à pyhocon.
+        // Transparent-fallback signal: the Python wrapper catches it and delegates to pyhocon.
         Err(HoconError::Unsupported(m)) => return Err(pyo3::exceptions::PyNotImplementedError::new_err(m)),
     };
     let mut stack = Vec::new();
     let resolved = match resolve_node(&tree, &tree, &mut stack) {
         Ok(r) => r.unwrap_or(Value::Obj(Vec::new())),
-        // Tout ÉCHEC de résolution → fallback transparent vers pyhocon (l'oracle tranche). Le natif
-        // ne gère que le chemin heureux ; pour tout ce qu'il ne résout pas — auto-référence
-        // (`a = ${a}`), self-concat (`p = ${p}":x"`), navigation de chemin à travers une
-        // substitution (`${x.host}` où x=${base})… que pyhocon RÉSOUT, comme les vraies erreurs
-        // (variable absente, cycle, type incompatible) que pyhocon LÈVE — on délègue. iso garantie.
+        // ANY resolution failure → transparent fallback to pyhocon (the oracle decides). The native
+        // core only handles the happy path; for anything it cannot resolve — self-reference
+        // (`a = ${a}`), self-concat (`p = ${p}":x"`), path navigation through a substitution
+        // (`${x.host}` where x=${base})… which pyhocon RESOLVES, as well as genuine errors (undefined
+        // variable, cycle, type mismatch) which pyhocon RAISES — we delegate. Iso guaranteed.
         Err(ResolveError::Subst(m)) | Err(ResolveError::WrongType(m)) | Err(ResolveError::Fallback(m)) => {
             return Err(pyo3::exceptions::PyNotImplementedError::new_err(m))
         }

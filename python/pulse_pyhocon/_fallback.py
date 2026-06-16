@@ -1,8 +1,8 @@
-"""Fallback pur-Python du drop-in pyhocon.
+"""Pure-Python fallback for the pyhocon drop-in.
 
-Quand l'extension native n'est pas compilée, on délègue à pyhocon lui-même (la référence) :
-trivialement iso-fonctionnel, correct mais sans le gain de perf. Renvoie un vrai `ConfigTree`
-(comme `ConfigFactory.parse_string`) — surface d'API identique au chemin natif.
+When the native extension is not compiled, we delegate to pyhocon itself (the reference):
+trivially iso-functional, correct but without the perf gain. Returns a real `ConfigTree`
+(like `ConfigFactory.parse_string`) — same API surface as the native path.
 """
 from pyhocon import ConfigFactory
 

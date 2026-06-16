@@ -1,23 +1,23 @@
-"""Drop-in Rust/PyO3 de pyhocon (axe B) — API complète renvoyant un vrai `ConfigTree`.
+"""Rust/PyO3 drop-in for pyhocon — full API, returning a real `ConfigTree`.
 
-`parse`/`parse_string`/`parse_file` renvoient un `pyhocon.ConfigTree` → toute l'API pyhocon marche
-(`get`, `get_string`/`get_int`/`get_float`/`get_bool`/`get_list`/`get_config`, accès pointé, défaut,
+`parse`/`parse_string`/`parse_file` return a `pyhocon.ConfigTree`, so the whole pyhocon API works
+(`get`, `get_string`/`get_int`/`get_float`/`get_bool`/`get_list`/`get_config`, dotted access, defaults,
 `with_fallback`, `as_plain_ordered_dict`, `HOCONConverter.to_hocon/json/yaml/properties`…).
 
-Chemin rapide : le noyau Rust parse vite (dict plat), qu'on enveloppe en `ConfigTree` via
-`ConfigFactory.from_dict` (le constructeur dict→arbre canonique de pyhocon → iso, vérifié structure +
-getters). On NE réimplémente PAS les getters/converters en Rust (ce n'est pas le chemin chaud) : on
-réutilise ceux de pyhocon sur l'arbre. Tout construct hors chemin rapide ou échec de résolution →
-`NotImplementedError` → délégation transparente à pyhocon (l'oracle). Iso garantie.
+Fast path: the Rust core parses quickly (flat dict), which we wrap into a `ConfigTree` via
+`ConfigFactory.from_dict` (pyhocon's canonical dict→tree builder → iso, verified on structure and
+getters). We do NOT reimplement the getters/converters in Rust (they are not the hot path): we reuse
+pyhocon's on the tree. Anything outside the fast path, or any resolution failure, raises
+`NotImplementedError` → transparent delegation to pyhocon (the oracle). Iso guaranteed.
 
-PULSE_FORCE_FALLBACK=1 force le chemin pyhocon (le gate l'utilise pour prouver l'iso du fallback).
+PULSE_FORCE_FALLBACK=1 forces the pyhocon path (the gate uses it to prove the fallback is also iso).
 """
 import os
 
 from pyhocon import ConfigFactory
-from pyhocon.config_tree import ConfigTree  # noqa: F401  (ré-export)
-from pyhocon.converter import HOCONConverter  # noqa: F401  (ré-export)
-from pyhocon.exceptions import (  # noqa: F401  (ré-export)
+from pyhocon.config_tree import ConfigTree  # noqa: F401  (re-export)
+from pyhocon.converter import HOCONConverter  # noqa: F401  (re-export)
+from pyhocon.exceptions import (  # noqa: F401  (re-export)
     ConfigException,
     ConfigMissingException,
     ConfigSubstitutionException,
@@ -25,7 +25,7 @@ from pyhocon.exceptions import (  # noqa: F401  (ré-export)
 )
 
 if not os.environ.get("PULSE_FORCE_FALLBACK"):
-    try:  # pragma: no cover - dépend du build natif
+    try:  # pragma: no cover - depends on the native build
         from ._native import parse as _native_parse
         BACKEND = "rust"
     except ImportError:  # pragma: no cover
@@ -37,27 +37,27 @@ else:  # pragma: no cover
 
 
 def parse_string(s):
-    """Drop-in de `ConfigFactory.parse_string(s)` → `ConfigTree`."""
+    """Drop-in for `ConfigFactory.parse_string(s)` → `ConfigTree`."""
     if _native_parse is not None:
         try:
             return ConfigFactory.from_dict(_native_parse(s))
         except (NotImplementedError, ValueError):
-            # hors périmètre / échec de résolution / entrée malformée → pyhocon tranche (résout, ou
-            # lève SON type d'exception exact : ConfigException/ParseException…). Iso garantie.
+            # out of scope / resolution failure / malformed input → pyhocon decides (resolves, or
+            # raises ITS exact exception type: ConfigException/ParseException…). Iso guaranteed.
             pass
     return ConfigFactory.parse_string(s)
 
 
 def parse_file(filename, encoding="utf-8", required=True, resolve=True):
-    """Drop-in de `ConfigFactory.parse_file` → `ConfigTree` (includes résolus relativement au fichier)."""
-    # resolve=False (arbre non résolu) ou pas de natif → pyhocon gère
+    """Drop-in for `ConfigFactory.parse_file` → `ConfigTree` (includes resolved relative to the file)."""
+    # resolve=False (unresolved tree) or no native backend → let pyhocon handle it
     if _native_parse is None or not resolve:
         return ConfigFactory.parse_file(filename, encoding=encoding, required=required, resolve=resolve)
     try:
         with open(filename, encoding=encoding) as f:
             content = f.read()
     except IOError:
-        # fichier manquant/illisible : pyhocon applique la sémantique required/optionnel
+        # missing/unreadable file: pyhocon applies the required/optional semantics
         return ConfigFactory.parse_file(filename, encoding=encoding, required=required, resolve=resolve)
     try:
         base = os.path.dirname(os.path.abspath(filename))
@@ -67,16 +67,16 @@ def parse_file(filename, encoding="utf-8", required=True, resolve=True):
 
 
 def parse_URL(url, *args, **kwargs):
-    """Passthrough vers pyhocon (I/O réseau — hors périmètre perf, faux ami)."""
+    """Passthrough to pyhocon (network I/O — out of perf scope, a false friend)."""
     return ConfigFactory.parse_URL(url, *args, **kwargs)
 
 
 def from_dict(dictionary, root=False):
-    """Passthrough vers `ConfigFactory.from_dict` (pas un parse)."""
+    """Passthrough to `ConfigFactory.from_dict` (not a parse)."""
     return ConfigFactory.from_dict(dictionary, root=root)
 
 
-# Alias historique : `pulse_pyhocon.parse` == `parse_string`.
+# Historical alias: `pulse_pyhocon.parse` == `parse_string`.
 parse = parse_string
 
 __all__ = [

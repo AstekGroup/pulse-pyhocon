@@ -1,5 +1,5 @@
-"""Oracle différentiel : pulse_pyhocon.parse doit être iso-fonctionnel avec pyhocon
-(ConfigFactory.parse_string) — résultat ET type d'exception. C'est la garantie centrale du package.
+"""Differential oracle: pulse_pyhocon.parse must be iso-functional with pyhocon
+(ConfigFactory.parse_string) — result AND exception type. This is the package's core guarantee.
 """
 import pytest
 from pyhocon import ConfigFactory
@@ -24,8 +24,8 @@ def _plain(x):
 
 
 def _canon(x):
-    """Forme canonique TYPÉE — attrape tout drift int/float/bool/null (1 == 1.0 en Python).
-    ConfigTree ⊂ dict (récursion via items()) ; NoneValue (null interne pyhocon) ≡ None."""
+    """TYPED canonical form — catches any int/float/bool/null drift (1 == 1.0 in Python).
+    ConfigTree ⊂ dict (recursion via items()); NoneValue (pyhocon's internal null) ≡ None."""
     if isinstance(x, dict):
         return ("dict", [(k, _canon(v)) for k, v in x.items()])
     if isinstance(x, list):
@@ -51,7 +51,7 @@ def _outcome(fn, text):
 
 
 def _ref(text):
-    # ConfigTree brut : le candidat renvoie aussi un ConfigTree → on compare l'API complète.
+    # Raw ConfigTree: the candidate also returns a ConfigTree → we compare the full API.
     return ConfigFactory.parse_string(text)
 
 
@@ -80,22 +80,22 @@ CORE = [
     "base = /opt\nbin = ${base}/bin",
     "b = ${nope}",                       # ConfigSubstitutionException
     "a = ${b}\nb = ${a}",                # cycle
-    # concaténation objets/arrays
+    # object/array concatenation
     "o1={x=1}\no2={y=2}\nm=${o1}${o2}",
     "m = {x=1} {y=2}",
     "a1=[1,2]\na2=[3,4]\nc=${a1}${a2}",
     "c = [1] [2] [3]",
     "o={x=1}\nm=${o} foo",               # ConfigWrongTypeException
-    # régressions (fuzz)
-    "a = 9999999999999999999",           # grand entier
-    "b = a//b",                          # '//' littéral
+    # regressions (fuzz)
+    "a = 9999999999999999999",           # big integer
+    "b = a//b",                          # literal '//'
     "u = http://host:5432/path",
-    "a { b = 1 } c { d = 2 }",           # objet sans '='
-    "b = ${?n1}${?n2}",                  # tous absents -> clé omise
-    "a = null\nb = ${a}",                # subst -> null -> clé omise
+    "a { b = 1 } c { d = 2 }",           # object without '='
+    "b = ${?n1}${?n2}",                  # all absent -> key omitted
+    "a = null\nb = ${a}",                # subst -> null -> key omitted
     '"hello" = 1',
-    '"a.b" = 1',                         # clé quotée spéciale -> fallback
-    "a =",                               # valeur vide -> fallback
+    '"a.b" = 1',                         # special quoted key -> fallback
+    "a =",                               # empty value -> fallback
     # +=
     "a += 1\na += 2",
     "x = [1,2]\nx += [3,4]",
@@ -108,24 +108,24 @@ def test_iso_core(text):
     assert _outcome(pulse_pyhocon.parse, text) == _outcome(_ref, text)
 
 
-# Auto-référence — pyhocon résout `${k}` (dans la valeur qui écrase `k`) vers la valeur PRÉCÉDENTE
-# (ex. `path = ${path}":/usr/bin"`). Idiomes courants à valeur précédente CONCRÈTE → résolus en NATIF ;
-# valeur précédente non-concrète / chemin absolu / nav-à-travers-subst → fallback transparent. Tous iso.
-# (Régression historique corrigée : ces cas levaient à tort ConfigSubstitutionException.)
+# Self-reference — pyhocon resolves `${k}` (in the value overriding `k`) to the PREVIOUS value
+# (e.g. `path = ${path}":/usr/bin"`). Common idioms with a CONCRETE previous value are resolved
+# NATIVELY; a non-concrete previous value / absolute path / nav-through-substitution → transparent
+# fallback. All iso. (Historical regression fixed: these used to wrongly raise ConfigSubstitutionException.)
 SELFREF = [
-    "a = 1\na = ${a}",                                   # -> 1 (natif)
-    'p = "/bin"\np = ${p}":/usr/bin"',                   # -> "/bin:/usr/bin" (natif)
-    "p = /a\np = ${p}:/b",                               # suffixe non-quoté (natif)
-    "a = [1]\na = ${a} [2]",                             # -> [1, 2] (natif)
-    "a = [1]\na = ${a}[2]",                              # sans espace (natif)
-    "a = { b = 1 }\na = ${a} { c = 2 }",                 # self-merge objet (natif)
-    "n = 1\nn = ${n} 2",                                 # -> "1 2" (natif)
-    "a = 1\na = ${a}\na = ${a}",                         # double override (natif)
-    "a = ${b}\na = ${a}\nb = 5",                         # valeur préc. non-concrète -> fallback (pyhocon LÈVE)
-    "x { a = 1 }\nx { a = ${x.a} }",                     # chemin absolu imbriqué -> fallback
-    "base = { host = h }\nx = ${base}\ny = ${x.host}",   # nav à travers subst -> fallback
-    "a = { b = { c = 1 } }\nd = ${a}\ne = ${d.b.c}",     # nav profonde -> fallback
-    "a = ${a}",                                          # sans valeur préalable -> pyhocon LÈVE (fallback)
+    "a = 1\na = ${a}",                                   # -> 1 (native)
+    'p = "/bin"\np = ${p}":/usr/bin"',                   # -> "/bin:/usr/bin" (native)
+    "p = /a\np = ${p}:/b",                               # unquoted suffix (native)
+    "a = [1]\na = ${a} [2]",                             # -> [1, 2] (native)
+    "a = [1]\na = ${a}[2]",                              # no space (native)
+    "a = { b = 1 }\na = ${a} { c = 2 }",                 # object self-merge (native)
+    "n = 1\nn = ${n} 2",                                 # -> "1 2" (native)
+    "a = 1\na = ${a}\na = ${a}",                         # double override (native)
+    "a = ${b}\na = ${a}\nb = 5",                         # non-concrete previous value -> fallback (pyhocon RAISES)
+    "x { a = 1 }\nx { a = ${x.a} }",                     # nested absolute path -> fallback
+    "base = { host = h }\nx = ${base}\ny = ${x.host}",   # nav through a substitution -> fallback
+    "a = { b = { c = 1 } }\nd = ${a}\ne = ${d.b.c}",     # deep nav -> fallback
+    "a = ${a}",                                          # no previous value -> pyhocon RAISES (fallback)
 ]
 
 
@@ -134,9 +134,9 @@ def test_iso_self_reference(text):
     assert _outcome(pulse_pyhocon.parse, text) == _outcome(_ref, text)
 
 
-# Mot-clé nu true/false dans un run non-quoté multi-tokens : pyhocon le TYPE (-> "True"/"False" en
-# concat string), le natif fallback transparent -> iso. (null exclu : pyhocon rend un repr NoneValue
-# avec adresse mémoire, non déterministe même pyhocon-vs-pyhocon.)
+# Bare true/false keyword in a multi-token unquoted run: pyhocon TYPES it (-> "True"/"False" in a
+# string concat), the native core falls back transparently -> iso. (null excluded: pyhocon renders a
+# NoneValue repr with a memory address, non-deterministic even pyhocon-vs-pyhocon.)
 KEYWORD_CONCAT = [
     "m = foo true",
     "m = a true b",
@@ -151,8 +151,8 @@ def test_iso_keyword_concat(text):
     assert _outcome(pulse_pyhocon.parse, text) == _outcome(_ref, text)
 
 
-# Entrée MALFORMÉE : le natif lève ValueError → le wrapper délègue à pyhocon, qui lève SON type exact
-# (ParseException/…). Parité du TYPE d'exception (avant : ValueError ≠ ParseException).
+# MALFORMED input: the native core raises ValueError → the wrapper delegates to pyhocon, which raises
+# ITS exact type (ParseException/…). Exception-TYPE parity (before: ValueError ≠ ParseException).
 MALFORMED = [
     "= 5",
     "a = }",
@@ -165,13 +165,13 @@ def test_iso_malformed_exception_type(text):
     assert _outcome(pulse_pyhocon.parse, text) == _outcome(_ref, text)
 
 
-# Float EXTRÊME en concaténation string : Rust formate sans notation scientifique ≠ str(float) Python
-# → fallback transparent (pyhocon rend). Un float NORMAL en concat reste natif (iso direct).
+# EXTREME float in a string concatenation: Rust formats without scientific notation ≠ Python str(float)
+# → transparent fallback (pyhocon renders). A NORMAL float in a concat stays native (directly iso).
 FLOAT_CONCAT = [
-    "f = 1e100\ns = ${f} x",      # extrême -> fallback
-    "f = 1e-7\ns = ${f}x",        # extrême -> fallback
-    "f = 1.5\ns = ${f}-build",    # normal -> natif
-    "f = 3.14\ns = v${f}",        # normal -> natif
+    "f = 1e100\ns = ${f} x",      # extreme -> fallback
+    "f = 1e-7\ns = ${f}x",        # extreme -> fallback
+    "f = 1.5\ns = ${f}-build",    # normal -> native
+    "f = 3.14\ns = v${f}",        # normal -> native
 ]
 
 
@@ -201,11 +201,11 @@ def test_iso_includes(text, files, tmp_path, monkeypatch):
 
 
 def test_backend_native():
-    # En CI (extension compilée), le backend doit être natif.
+    # In CI (extension compiled), the backend must be native.
     assert pulse_pyhocon.BACKEND in ("rust", "python")
 
 
-# --- API ConfigTree complète : parse* renvoie un vrai ConfigTree, iso avec pyhocon -------------
+# --- Full ConfigTree API: parse* returns a real ConfigTree, iso with pyhocon --------------------
 
 API_CONF = (
     'a = 1\nb = hello\nc = 3.5\nd = true\ne = [1, 2, 3]\n'
@@ -224,10 +224,10 @@ def test_returns_real_configtree():
     lambda t: t.get_float("c"),
     lambda t: t.get_bool("d"),
     lambda t: t.get_list("e"),
-    lambda t: t.get_string("a"),                 # coercition int -> str
-    lambda t: t.get("f.x"),                      # accès pointé
-    lambda t: t.get_config("f").get("g.h"),      # sous-config
-    lambda t: t.get("absent", "DEFAULT"),        # défaut
+    lambda t: t.get_string("a"),                 # int -> str coercion
+    lambda t: t.get("f.x"),                      # dotted access
+    lambda t: t.get_config("f").get("g.h"),      # sub-config
+    lambda t: t.get("absent", "DEFAULT"),        # default
     lambda t: "f" in t,
     lambda t: sorted(t.keys()),
     lambda t: t.as_plain_ordered_dict(),
@@ -273,8 +273,8 @@ def test_iso_parse_file(tmp_path):
 
 
 def test_iso_parse_file_missing_required(tmp_path):
-    # fichier requis manquant : même comportement (exception) des deux côtés
+    # required file missing: same behavior (exception) on both sides
     path = str(tmp_path / "nope.conf")
     ra = _outcome(lambda _p: pulse_pyhocon.parse_file(path), path)
     rb = _outcome(lambda _p: ConfigFactory.parse_file(path), path)
-    assert ra[0] == rb[0]  # tous deux ok (vide) ou tous deux exc
+    assert ra[0] == rb[0]  # both ok (empty) or both exc

@@ -3,14 +3,14 @@ name = "pulse_pyhocon"
 version = "0.2.0"
 edition = "2021"
 license = "Apache-2.0"
-description = "Noyau Rust/PyO3 de pulse-pyhocon : parseur HOCON natif, drop-in iso de pyhocon"
+description = "Rust/PyO3 core of pulse-pyhocon: native HOCON parser, iso drop-in for pyhocon"
 
 [lib]
 name = "_native"
 crate-type = ["cdylib"]
 
-# NB : `extension-module` n'est PAS activé ici (sinon `cargo test` ne lie pas libpython).
-# maturin l'ajoute au build du wheel via pyproject.toml ([tool.maturin] features).
+# NB: `extension-module` is NOT enabled here (otherwise `cargo test` would not link libpython).
+# maturin adds it for the wheel build via pyproject.toml ([tool.maturin] features).
 [dependencies]
 pyo3 = { version = "0.23", features = ["abi3-py311"] }
 
